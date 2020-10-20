@@ -2188,33 +2188,53 @@ opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 	}
 #endif
 
+	find_levels(opt_state, ic);
+	find_dom(opt_state, ic->root);
+	find_closure(opt_state, ic->root);
+	find_ud(opt_state, ic->root);
+	find_edom(opt_state, ic->root);
+	opt_blks(opt_state, ic, do_stmts);
+#ifdef BDEBUG
+	if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
+		printf("opt_loop(root, %d) bottom, done=%d\n", do_stmts, opt_state->done);
+		opt_dump(opt_state, ic);
+	}
+#endif
+}
+
+/*
+ * Optimize the filter code in its dag representation.
+ * Return 0 on success, -1 on error.
+ */
+int
+bpf_optimize(struct icode *ic, char *errbuf)
+{
+	opt_state_t opt_state;
+
+	memset(&opt_state, 0, sizeof(opt_state));
+	opt_state.errbuf = errbuf;
+	opt_state.non_branch_movement_performed = 0;
+	if (setjmp(opt_state.top_ctx)) {
+		opt_cleanup(&opt_state);
+		return -1;
+	}
+	opt_init(&opt_state, ic);
+	int loop_count = 0;
 	/*
 	 * XXX - optimizer loop detection.
 	 */
-	int loop_count = 0;
-	for (;;) {
-		opt_state->done = 1;
+	do {
+		opt_state.done = 1;
 		/*
 		 * XXX - optimizer loop detection.
 		 */
-		opt_state->non_branch_movement_performed = 0;
-		find_levels(opt_state, ic);
-		find_dom(opt_state, ic->root);
-		find_closure(opt_state, ic->root);
-		find_ud(opt_state, ic->root);
-		find_edom(opt_state, ic->root);
-		opt_blks(opt_state, ic, do_stmts);
-#ifdef BDEBUG
-		if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
-			printf("opt_loop(root, %d) bottom, done=%d\n", do_stmts, opt_state->done);
-			opt_dump(opt_state, ic);
-		}
-#endif
-
+		opt_state.non_branch_movement_performed = 0;
+		opt_loop(&opt_state, ic, 0);
+		opt_loop(&opt_state, ic, 1);
 		/*
 		 * Was anything done in this optimizer pass?
 		 */
-		if (opt_state->done) {
+		if (opt_state.done) {
 			/*
 			 * No, so we've reached a fixed point.
 			 * We're done.
@@ -2226,7 +2246,7 @@ opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 		 * XXX - was anything done other than branch movement
 		 * in this pass?
 		 */
-		if (opt_state->non_branch_movement_performed) {
+		if (opt_state.non_branch_movement_performed) {
 			/*
 			 * Yes.  Clear any loop-detection counter;
 			 * we're making some form of progress (assuming
@@ -2250,32 +2270,10 @@ opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 				 * XXX - yes, we really need a non-
 				 * heuristic way of detecting a cycle.
 				 */
-				opt_state->done = 1;
-				break;
+				opt_state.done = 1;
 			}
 		}
-	}
-}
-
-/*
- * Optimize the filter code in its dag representation.
- * Return 0 on success, -1 on error.
- */
-int
-bpf_optimize(struct icode *ic, char *errbuf)
-{
-	opt_state_t opt_state;
-
-	memset(&opt_state, 0, sizeof(opt_state));
-	opt_state.errbuf = errbuf;
-	opt_state.non_branch_movement_performed = 0;
-	if (setjmp(opt_state.top_ctx)) {
-		opt_cleanup(&opt_state);
-		return -1;
-	}
-	opt_init(&opt_state, ic);
-	opt_loop(&opt_state, ic, 0);
-	opt_loop(&opt_state, ic, 1);
+	} while (!opt_state.done);
 	intern_blocks(&opt_state, ic);
 #ifdef BDEBUG
 	if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
