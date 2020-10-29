@@ -233,6 +233,11 @@ typedef struct {
 	jmp_buf top_ctx;
 
 	/*
+	 * Place to longjmp to rebuild optimizer state.
+	 */
+	jmp_buf rebuild_cfg_ctx;
+
+	/*
 	 * The buffer into which to put error message.
 	 */
 	char *errbuf;
@@ -336,6 +341,16 @@ typedef struct {
 	struct valnode *vnode_base;
 	struct valnode *next_vnode;
 } opt_state_t;
+
+/*
+ * To rebuild control flow graph data structures
+ */
+static void
+opt_rebuild_cfg(opt_state_t *opt_state)
+{
+	if (!opt_state->done)
+		longjmp(opt_state->rebuild_cfg_ctx, 1);
+}
 
 typedef struct {
 	/*
@@ -868,6 +883,7 @@ fold_op(opt_state_t *opt_state, struct stmt *s, bpf_u_int32 v0, bpf_u_int32 v1)
 	 */
 	opt_state->non_branch_movement_performed = 1;
 	opt_state->done = 0;
+	opt_rebuild_cfg(opt_state);
 }
 
 static inline struct slist *
@@ -1169,6 +1185,7 @@ opt_peep(opt_state_t *opt_state, struct block *b)
 			 */
 			opt_state->non_branch_movement_performed = 1;
 			opt_state->done = 0;
+			opt_rebuild_cfg(opt_state);
 		}
 		if (v)
 			JF(b) = JT(b);
@@ -1975,6 +1992,7 @@ or_pullup(opt_state_t *opt_state, struct block *b)
 	 * optimizer gets into one of those infinite loops.
 	 */
 	opt_state->done = 0;
+	opt_rebuild_cfg(opt_state);
 }
 
 static void
@@ -2071,6 +2089,7 @@ and_pullup(opt_state_t *opt_state, struct block *b)
 	 * optimizer gets into one of those infinite loops.
 	 */
 	opt_state->done = 0;
+	opt_rebuild_cfg(opt_state);
 }
 
 static void
@@ -2084,8 +2103,10 @@ opt_blks(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 
 	find_inedges(opt_state, ic->root);
 	for (i = maxlevel; i >= 0; --i)
-		for (p = opt_state->levels[i]; p; p = p->link)
+		for (p = opt_state->levels[i]; p; p = p->link) {
 			opt_blk(opt_state, p, do_stmts);
+			opt_rebuild_cfg(opt_state);
+		}
 
 	if (do_stmts)
 		/*
@@ -2186,6 +2207,7 @@ opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 		opt_dump(opt_state, ic);
 	}
 #endif
+	setjmp(opt_state->rebuild_cfg_ctx);
 
 	/*
 	 * XXX - optimizer loop detection.
