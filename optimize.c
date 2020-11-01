@@ -250,6 +250,11 @@ typedef struct {
 	int done;
 
 	/*
+	 * A counter to detect infinite loops in optimization.
+	 */
+	int loop_count;
+
+	/*
 	 * XXX - detect loops that do nothing but repeated AND/OR pullups
 	 * and edge moves.
 	 * If 100 passes in a row do nothing but that, treat that as a
@@ -1805,10 +1810,13 @@ opt_j(opt_state_t *opt_state, struct edge *ep)
 					 * Start over unless we hit a leaf.
 					 */
 					goto top;
+				else
+					opt_rebuild_cfg(opt_state);
 				return;
 			}
 		}
 	}
+	opt_rebuild_cfg(opt_state);
 }
 
 /*
@@ -2198,33 +2206,42 @@ opt_root(struct block **b)
 }
 
 static void
-opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
+recalculate_cfg(opt_state_t *opt_state, struct icode *ic)
+{
+	find_levels(opt_state, ic);
+	find_dom(opt_state, ic->root);
+	find_closure(opt_state, ic->root);
+	find_ud(opt_state, ic->root);
+	find_edom(opt_state, ic->root);
+}
+
+static void
+opt_loop(opt_state_t *opt_state, struct icode *ic)
 {
 
 #ifdef BDEBUG
 	if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
-		printf("opt_loop(root, %d) begin\n", do_stmts);
+		printf("opt_loop(root) begin\n");
 		opt_dump(opt_state, ic);
 	}
 #endif
-	setjmp(opt_state->rebuild_cfg_ctx);
 
 	/*
 	 * XXX - optimizer loop detection.
 	 */
-	int loop_count = 0;
+	opt_state->loop_count = 0;
+
+	setjmp(opt_state->rebuild_cfg_ctx);
+
 	for (;;) {
 		opt_state->done = 1;
 		/*
 		 * XXX - optimizer loop detection.
 		 */
 		opt_state->non_branch_movement_performed = 0;
-		find_levels(opt_state, ic);
-		find_dom(opt_state, ic->root);
-		find_closure(opt_state, ic->root);
-		find_ud(opt_state, ic->root);
-		find_edom(opt_state, ic->root);
-		opt_blks(opt_state, ic, do_stmts);
+		recalculate_cfg(opt_state, ic);
+		opt_blks(opt_state, ic, 0);
+		opt_blks(opt_state, ic, 1);
 #ifdef BDEBUG
 		if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
 			printf("opt_loop(root, %d) bottom, done=%d\n", do_stmts, opt_state->done);
@@ -2254,14 +2271,14 @@ opt_loop(opt_state_t *opt_state, struct icode *ic, int do_stmts)
 			 * we can't get into a cycle doing *other*
 			 * optimizations...).
 			 */
-			loop_count = 0;
+			opt_state->loop_count = 0;
 		} else {
 			/*
 			 * No - increment the counter, and quit if
 			 * it's up to 100.
 			 */
-			loop_count++;
-			if (loop_count >= 100) {
+			opt_state->loop_count++;
+			if (opt_state->loop_count >= 100) {
 				/*
 				 * We've done nothing but branch movement
 				 * for 100 passes; we're probably
@@ -2295,8 +2312,7 @@ bpf_optimize(struct icode *ic, char *errbuf)
 		return -1;
 	}
 	opt_init(&opt_state, ic);
-	opt_loop(&opt_state, ic, 0);
-	opt_loop(&opt_state, ic, 1);
+	opt_loop(&opt_state, ic);
 	intern_blocks(&opt_state, ic);
 #ifdef BDEBUG
 	if (pcap_optimizer_debug > 1 || pcap_print_dot_graph) {
